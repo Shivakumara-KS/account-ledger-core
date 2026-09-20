@@ -29,3 +29,8 @@ started on 2026-09-19 before the implementation commits made overnight.
   REJECTED, and WORKLOG against the requirement and implementation; expanded
   report semantics, policy constants, ambiguity decisions, and criterion
   classifications.
+* 2026-09-20T16:54:35+04:00 — Added pipe-delimited text event-stream support
+  through `--file`, text fixtures from simple to complex, parser coverage, and
+  command-line documentation.
+* 2026-09-20T17:14:07+04:00 — Changed custom text fixtures and parsing from
+  pipe-delimited records to the requirement-style human-readable event lines.

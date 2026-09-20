@@ -22,6 +22,47 @@ prints one report for each simulation day. The final command is deliberately
 red: it demonstrates that three literal BHD 3.334 installments would create
 BHD 10.002 and violate conservation.
 
+### Replaying a text event stream
+
+The runner also accepts a human-readable UTF-8 text file with `--file`. Each
+line follows the same wording as the requirement examples. Blank lines and
+lines beginning with `#` are ignored:
+
+```text
+# E1 — Day 1 — CREDIT — ACC-001 AED 1,200.00 — value_date Day 1
+E1 — Day 1 — CREDIT — ACC-001 AED 1,200.00 — value_date Day 1
+```
+
+Supported event-specific lines are:
+
+```text
+E1 — Day 1 — CREDIT — ACC-001 AED 1,200.00 — value_date Day 1
+E2 — Day 1 — DEBIT — ACC-001 AED 950.00 — value_date Day 1
+E3 — Day 2 — AUTHORIZATION — ACC-001 Auth-A hold AED 200.00 — value_date Day 2
+E5 — Day 4 — SETTLEMENT — ACC-001 Auth-A settles for AED 185.00 — value_date Day 4
+E9 — Day 6 — REVERSAL — ACC-001 reverses E7 — value_date Day 2
+E10 — Day 5 — CREDIT — ACC-002 BHD 10.000, posted as three equal instalments — value_date Day 5
+```
+
+Sequence positions are derived from the order of non-comment lines. Amounts
+may contain comma thousands separators.
+
+Run a custom file from the repository root:
+
+```powershell
+.\mvnw.cmd spring-boot:run "-Dspring-boot.run.arguments=--file=custom-tests.txt"
+```
+
+The separate-argument form is also supported:
+
+```powershell
+.\mvnw.cmd spring-boot:run "-Dspring-boot.run.arguments=--file custom-tests.txt"
+```
+
+The supplied progressively complex text examples are in
+`src/test/resources/custom-events/01-simple-credit.txt` through
+`05-complex-multi-account.txt`.
+
 The normal suite is expected to pass. The intentional-failure profile is
 expected to fail by design and must not be used as the normal build gate.
 
