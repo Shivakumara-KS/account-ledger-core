@@ -1,0 +1,31 @@
+# Worklog
+
+All timestamps below are shown in **UTC+04:00**. Commit entries are based on
+the repository's committer timestamps after timezone conversion. Planning
+started on 2026-09-19 before the implementation commits made overnight.
+
+* 2026-09-19T12:30:00+04:00 (approx.) — Started requirement analysis and
+  implementation planning for the deterministic in-memory ledger.
+* 2026-09-19 (later) — Identified the temporal model, append-only journal
+  constraints, rejected acceptance criteria, and required documentation.
+* 2026-09-20T00:01:32+04:00 — Initialized the repository with the Spring Boot
+  Java 21 project skeleton.
+* 2026-09-20T00:37:47+04:00 — Added money, currency, account, authorization,
+  and simulation-day identifiers.
+* 2026-09-20T00:57:04+04:00 — Added the immutable ledger event hierarchy.
+  The commit was authored at 00:40:22, but committed at 00:57:04.
+* 2026-09-20T01:05:48+04:00 — Added append-only event and ledger journals.
+* 2026-09-20T01:13:47+04:00 — Corrected identifier formatting in the domain
+  model.
+* 2026-09-20T13:23:02+04:00 — Added the processing error model.
+* 2026-09-20T13:27:31+04:00 — Implemented deterministic replay, historical
+  projections, authorization, settlement, reversal, fee reconciliation,
+  installments, and interest capitalization.
+* 2026-09-20T13:37:57+04:00 — Added the requirement fixture and console
+  reporting.
+* 2026-09-20T13:43:11+04:00 — Added end-to-end coverage and the intentional
+  installment-failure profile.
+* 2026-09-20T13:46:39+04:00 — Rechecked README, NUMBERS, AMBIGUITIES,
+  REJECTED, and WORKLOG against the requirement and implementation; expanded
+  report semantics, policy constants, ambiguity decisions, and criterion
+  classifications.
