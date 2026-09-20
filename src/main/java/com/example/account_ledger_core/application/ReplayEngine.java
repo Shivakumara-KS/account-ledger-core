@@ -8,6 +8,19 @@ public final class ReplayEngine {
     private static final Money OVERDRAFT_FEE = Money.of(CurrencyCode.AED, "25.00");
     private static final BigDecimal DAILY_RATE = new BigDecimal("0.0004");
     private final HistoricalBalanceProjectionService projection = new HistoricalBalanceProjectionService();
+    private final EventJournal eventJournal;
+    private final LedgerJournal ledgerJournal;
+    private final AccountCurrencyPolicy accountCurrencyPolicy = new AccountCurrencyPolicy();
+
+    public ReplayEngine() {
+        this(new com.example.account_ledger_core.infrastructure.InMemoryEventJournal(),
+                new com.example.account_ledger_core.infrastructure.InMemoryLedgerJournal());
+    }
+
+    public ReplayEngine(EventJournal eventJournal, LedgerJournal ledgerJournal) {
+        this.eventJournal = Objects.requireNonNull(eventJournal);
+        this.ledgerJournal = Objects.requireNonNull(ledgerJournal);
+    }
 
     public ReplayResult replay(List<LedgerEvent> input) {
         Objects.requireNonNull(input, "events");
@@ -15,23 +28,38 @@ public final class ReplayEngine {
         List<LedgerEvent> accepted = new ArrayList<>(), rejected = new ArrayList<>();
         List<LedgerEntry> entries = new ArrayList<>();
         List<ProcessingError> errors = new ArrayList<>();
-        Map<String, LedgerEvent> byId = new LinkedHashMap<>();
+        Set<String> receivedIds = new HashSet<>();
+        Map<String, LedgerEvent> postedEventsById = new LinkedHashMap<>();
         Map<String, Authorization> auths = new LinkedHashMap<>();
+        Set<String> authorizationIds = new HashSet<>();
         Set<String> reversedEvents = new HashSet<>();
-        int expectedPosition = 1;
-
-        for (LedgerEvent event : history) {
-            if (byId.containsKey(event.eventId())) {
+        for (int index = 0; index < history.size(); index++) {
+            LedgerEvent event = history.get(index);
+            int expectedPosition = index + 1;
+            eventJournal.receive(event);
+            if (!receivedIds.add(event.eventId())) {
                 reject(event, ErrorCode.DUPLICATE_EVENT_ID, "Event id already received", errors, rejected);
                 continue;
             }
-            byId.put(event.eventId(), event);
             if (event.sequencePosition() != expectedPosition++) {
                 reject(event, ErrorCode.INVALID_EVENT_ORDER, "Sequence position is not the supplied stream order",
                         errors, rejected);
                 continue;
             }
             accepted.add(event);
+            if (eventJournal.accepted().stream().noneMatch(existing -> existing.eventId().equals(event.eventId()))) {
+                eventJournal.accept(event);
+            }
+            try {
+                accountCurrencyPolicy.validate(event.accountId(), event.currency());
+            } catch (IllegalArgumentException exception) {
+                rejectAccepted(event, ErrorCode.ACCOUNT_CURRENCY_MISMATCH, exception.getMessage(), errors);
+                continue;
+            }
+            if (event instanceof CreditEvent || event instanceof DebitEvent
+                    || event instanceof InstallmentCreditEvent) {
+                postedEventsById.put(event.eventId(), event);
+            }
             if (event instanceof CreditEvent e) {
                 entries.add(entry(e.eventId(), e.accountId(), e.amount(), EntryDirection.CREDIT,
                         LedgerEntryType.CREDIT, e.bookingDay(), e.valueDate(), e.eventId(), null, entries.size()));
@@ -39,6 +67,11 @@ public final class ReplayEngine {
                 entries.add(entry(e.eventId(), e.accountId(), e.amount(), EntryDirection.DEBIT,
                         LedgerEntryType.DEBIT, e.bookingDay(), e.valueDate(), e.eventId(), null, entries.size()));
             } else if (event instanceof AuthorizationEvent e) {
+                if (!authorizationIds.add(e.authorizationId().value())) {
+                    rejectAccepted(e, ErrorCode.DUPLICATE_AUTHORIZATION_ID,
+                            "Authorization id already exists", errors);
+                    continue;
+                }
                 Money current = projection.balance(e.accountId(), e.bookingDay(), e.bookingDay(), entries, e.currency());
                 Money holds = activeHolds(e.accountId(), e.bookingDay(), auths.values(), e.currency());
                 Money available = current.subtract(holds).subtract(e.holdAmount());
@@ -46,9 +79,10 @@ public final class ReplayEngine {
                         e.holdAmount(), e.bookingDay(),
                         available.isNegative() ? AuthorizationState.REJECTED : AuthorizationState.APPROVED);
                 auths.put(e.authorizationId().value(), authorization);
-                if (authorization.state() == AuthorizationState.REJECTED)
+                if (authorization.state() == AuthorizationState.REJECTED) {
                     errors.add(new ProcessingError(e.eventId(), ErrorCode.INSUFFICIENT_AVAILABLE_BALANCE,
                             "Available balance would be negative"));
+                }
             } else if (event instanceof SettlementEvent e) {
                 Authorization auth = auths.get(e.authorizationId().value());
                 if (auth == null) {
@@ -57,6 +91,9 @@ public final class ReplayEngine {
                     rejectAccepted(e, ErrorCode.ACCOUNT_MISMATCH, "Authorization account differs", errors);
                 } else if (auth.currency() != e.currency()) {
                     rejectAccepted(e, ErrorCode.CURRENCY_MISMATCH, "Authorization currency differs", errors);
+                } else if (!e.amount().isPositive() || e.amount().amount().compareTo(auth.holdAmount().amount()) > 0) {
+                    rejectAccepted(e, ErrorCode.SETTLEMENT_AMOUNT_INVALID,
+                            "Settlement amount must be positive and not exceed the authorization hold", errors);
                 } else if (auth.state() != AuthorizationState.APPROVED) {
                     rejectAccepted(e, ErrorCode.SETTLEMENT_AUTH_NOT_APPROVED, "Authorization is not approved", errors);
                 } else {
@@ -65,7 +102,7 @@ public final class ReplayEngine {
                     auths.put(auth.authorizationId().value(), auth.withState(AuthorizationState.SETTLED));
                 }
             } else if (event instanceof ReversalEvent e) {
-                LedgerEvent original = byId.get(e.originalEventId());
+                LedgerEvent original = postedEventsById.get(e.originalEventId());
                 if (original == null) {
                     rejectAccepted(e, ErrorCode.EVENT_NOT_FOUND, "Reversal target does not exist", errors);
                 } else if (reversedEvents.contains(e.originalEventId())) {
@@ -80,7 +117,7 @@ public final class ReplayEngine {
                         rejectAccepted(e, ErrorCode.CURRENCY_MISMATCH, "Reversal currency differs", errors);
                     } else {
                         entries.add(entry(e.eventId(), e.accountId(), debit.amount(), EntryDirection.CREDIT,
-                                LedgerEntryType.REVERSAL_POSTING, e.bookingDay(), e.valueDate(), e.eventId(),
+                                LedgerEntryType.REVERSAL_POSTING, e.bookingDay(), debit.valueDate(), e.eventId(),
                                 debit.eventId(), entries.size()));
                         reversedEvents.add(e.originalEventId());
                     }
@@ -88,12 +125,13 @@ public final class ReplayEngine {
             } else if (event instanceof InstallmentCreditEvent e) {
                 appendInstallments(e, entries);
             }
-            // A newly discovered backdated debit can create fees immediately, while later events can reconcile them.
-            reconcileFees(event.bookingDay(), entries);
+            boolean endOfBookingDay = index == history.size() - 1
+                    || history.get(index + 1).bookingDay() != event.bookingDay();
+            if (endOfBookingDay) {
+                reconcileFees(event.bookingDay(), entries);
+            }
         }
 
-        // E9 makes all historical balances positive; compensate earlier fee assessments without deleting them.
-        reconcileFees(SimulationDay.DAY6, entries);
         List<DailyInterestAccrual> accruals = calculateAccruals(entries);
         Map<AccountId, Money> interest = totals(accruals);
         for (Map.Entry<AccountId, Money> item : interest.entrySet()) {
@@ -103,12 +141,16 @@ public final class ReplayEngine {
                         "INTEREST-DAY6", null, entries.size()));
             }
         }
+        Set<String> journalEntryIds = ledgerJournal.entries().stream()
+                .map(LedgerEntry::entryId).collect(java.util.stream.Collectors.toSet());
+        entries.stream().filter(entry -> journalEntryIds.add(entry.entryId()))
+                .forEach(ledgerJournal::append);
 
         List<LedgerEntry> feeAssessments = entries.stream().filter(e -> e.entryType() == LedgerEntryType.OVERDRAFT_FEE).toList();
         List<LedgerEntry> feeReversals = entries.stream().filter(e -> e.entryType() == LedgerEntryType.FEE_REVERSAL).toList();
         Map<AccountId, Money> finalBalances = finalBalances(entries);
-        Map<SimulationDay, DailyReport> reports = reports(entries, auths, errors, accepted,
-                feeAssessments, interest);
+        Map<SimulationDay, DailyReport> reports = reports(entries, auths, errors, history, accepted,
+                feeAssessments, accruals);
         return new ReplayResult(history, accepted, rejected, entries, auths.values().stream().toList(), errors,
                 feeAssessments, feeReversals, accruals, reports, finalBalances);
     }
@@ -144,15 +186,15 @@ public final class ReplayEngine {
                 if (raw.isNegative() && !assessed.contains(key)) {
                     LedgerEntry fee = entry("FEE-" + account + "-" + day, account, OVERDRAFT_FEE,
                             EntryDirection.DEBIT, LedgerEntryType.OVERDRAFT_FEE, asOf, day,
-                            "FEE-RECONCILIATION-" + asOf, null, entries.size());
+                            "FEE-ASSESSMENT-" + day, null, entries.size());
                     entries.add(fee);
                     assessed.add(key);
                 } else if (!raw.isNegative() && assessed.contains(key)) {
-                    for (LedgerEntry fee : entries.stream().filter(x -> x.entryType() == LedgerEntryType.OVERDRAFT_FEE
-                            && x.accountId().equals(account) && x.valueDate() == day).toList()) {
+                    for (LedgerEntry fee : entries.stream().filter(entry -> entry.entryType() == LedgerEntryType.OVERDRAFT_FEE
+                            && entry.accountId().equals(account) && entry.valueDate() == day).toList()) {
                         if (!reversed.contains(fee.entryId())) {
                             entries.add(entry("FEE-REV-" + fee.entryId(), account, fee.amount(), EntryDirection.CREDIT,
-                                    LedgerEntryType.FEE_REVERSAL, asOf, day, "FEE-RECONCILIATION-" + asOf,
+                                    LedgerEntryType.FEE_REVERSAL, asOf, day, "FEE-REASSESSMENT-" + day,
                                     fee.entryId(), entries.size()));
                             reversed.add(fee.entryId());
                         }
@@ -164,14 +206,7 @@ public final class ReplayEngine {
 
     private Money baseBalance(AccountId account, SimulationDay day, SimulationDay asOf,
                                List<LedgerEntry> entries, CurrencyCode currency) {
-        Money result = Money.of(currency, "0");
-        for (LedgerEntry e : entries) {
-            if (e.accountId().equals(account) && e.bookingDay().number() <= asOf.number()
-                    && e.valueDate().number() <= day.number()
-                    && e.entryType() != LedgerEntryType.OVERDRAFT_FEE
-                    && e.entryType() != LedgerEntryType.FEE_REVERSAL) result = result.add(e.signedAmount());
-        }
-        return result;
+        return projection.balance(account, day, asOf, entries, currency, ProjectionMode.OPERATING_BALANCE);
     }
 
     private List<DailyInterestAccrual> calculateAccruals(List<LedgerEntry> entries) {
@@ -197,11 +232,7 @@ public final class ReplayEngine {
     }
 
     private Money baseFinalBalance(AccountId account, SimulationDay day, List<LedgerEntry> entries, CurrencyCode c) {
-        Money result = Money.of(c, "0");
-        for (LedgerEntry e : entries) if (e.accountId().equals(account)
-                && e.valueDate().number() <= day.number()
-                && e.entryType() != LedgerEntryType.INTEREST_CAPITALIZATION) result = result.add(e.signedAmount());
-        return result;
+        return projection.balance(account, day, SimulationDay.DAY6, entries, c, ProjectionMode.BOOKED_BALANCE);
     }
 
     private Map<AccountId, Money> finalBalances(List<LedgerEntry> entries) {
@@ -218,15 +249,16 @@ public final class ReplayEngine {
     }
 
     private Map<SimulationDay, DailyReport> reports(List<LedgerEntry> entries, Map<String, Authorization> auths,
-            List<ProcessingError> errors, List<LedgerEvent> accepted, List<LedgerEntry> fees,
-            Map<AccountId, Money> interest) {
+            List<ProcessingError> errors, List<LedgerEvent> history, List<LedgerEvent> accepted,
+            List<LedgerEntry> fees,
+            List<DailyInterestAccrual> accruals) {
         Map<SimulationDay, DailyReport> result = new EnumMap<>(SimulationDay.class);
         for (SimulationDay day : SimulationDay.values()) {
             Map<AccountId, Money> balances = new LinkedHashMap<>();
             for (AccountId account : accounts(entries)) {
                 balances.put(account, balanceAt(account, day, day, entries, currencyOf(account, entries)));
             }
-            List<ProcessingError> dayErrors = errors.stream().filter(error -> accepted.stream()
+            List<ProcessingError> dayErrors = errors.stream().filter(error -> history.stream()
                     .filter(event -> event.eventId().equals(error.eventId()))
                     .anyMatch(event -> event.bookingDay().number() == day.number())).toList();
             List<Authorization> dayAuthorizations = auths.values().stream()
@@ -236,22 +268,22 @@ public final class ReplayEngine {
                     fees.stream().filter(f -> f.bookingDay().number() == day.number()).toList(),
                     entries.stream().filter(f -> f.entryType() == LedgerEntryType.FEE_REVERSAL
                             && f.bookingDay().number() == day.number()).toList(),
-                    dayErrors, interest));
+                    dayErrors, interestForDay(accruals, day)));
         }
+
+        return result;
+    }
+
+    private Map<AccountId, Money> interestForDay(List<DailyInterestAccrual> accruals, SimulationDay day) {
+        Map<AccountId, Money> result = new LinkedHashMap<>();
+        accruals.stream().filter(a -> a.day() == day)
+                .forEach(a -> result.put(a.accountId(), a.amount()));
         return result;
     }
 
     private Money balanceAt(AccountId account, SimulationDay valueDate, SimulationDay asOf,
                             List<LedgerEntry> entries, CurrencyCode currency) {
-        Money result = Money.of(currency, "0");
-        for (LedgerEntry entry : entries) {
-            if (entry.accountId().equals(account)
-                    && entry.bookingDay().number() <= asOf.number()
-                    && entry.valueDate().number() <= valueDate.number()) {
-                result = result.add(entry.signedAmount());
-            }
-        }
-        return result;
+        return projection.balance(account, valueDate, asOf, entries, currency, ProjectionMode.ALL_ENTRIES);
     }
 
     private Authorization authorizationAt(Authorization authorization, SimulationDay day,
@@ -284,6 +316,7 @@ public final class ReplayEngine {
     }
     private void reject(LedgerEvent event, ErrorCode code, String message, List<ProcessingError> errors, List<LedgerEvent> rejected) {
         rejected.add(event);
+        eventJournal.reject(event);
         errors.add(new ProcessingError(event.eventId(), code, message));
     }
     private void rejectAccepted(LedgerEvent event, ErrorCode code, String message, List<ProcessingError> errors) {

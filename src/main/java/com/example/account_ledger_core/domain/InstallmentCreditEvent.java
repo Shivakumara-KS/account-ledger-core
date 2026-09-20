@@ -8,7 +8,9 @@ public record InstallmentCreditEvent(
         SimulationDay bookingDay,
         SimulationDay valueDate) implements LedgerEvent {
     public InstallmentCreditEvent {
-        if (installmentCount < 1)
+        if (eventId == null || eventId.isBlank() || accountId == null || totalAmount == null
+                || !totalAmount.isPositive() || bookingDay == null || valueDate == null
+                || installmentCount < 1)
             throw new IllegalArgumentException("installment count");
     }
     public CurrencyCode currency() {

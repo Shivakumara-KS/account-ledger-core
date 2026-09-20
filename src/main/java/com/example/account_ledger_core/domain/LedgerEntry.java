@@ -12,9 +12,22 @@ public record LedgerEntry(
         String causeEventId,
         String reversalOfEntryId) {
     public LedgerEntry {
-        if (amount.currency() != currency)
-            throw new IllegalArgumentException("entry currency mismatch");
-    }
+            if (entryId == null || entryId.isBlank() || accountId == null || currency == null || amount == null
+                    || direction == null || entryType == null || bookingDay == null || valueDate == null
+                    || causeEventId == null || causeEventId.isBlank() || !amount.isPositive()
+                    || amount.currency() != currency || !compatible(direction, entryType)
+                    || (reversalOfEntryId != null && reversalOfEntryId.isBlank())) {
+                throw new IllegalArgumentException("invalid ledger entry");
+            }
+        }
+
+        private static boolean compatible(EntryDirection direction, LedgerEntryType type) {
+            boolean credit = direction == EntryDirection.CREDIT;
+            return switch (type) {
+                case CREDIT, INSTALLMENT, REVERSAL_POSTING, FEE_REVERSAL, INTEREST_CAPITALIZATION -> credit;
+                case DEBIT, SETTLEMENT_DEBIT, OVERDRAFT_FEE -> !credit;
+            };
+        }
 
     public Money signedAmount() {
         return direction == EntryDirection.CREDIT ? amount : amount.negate();

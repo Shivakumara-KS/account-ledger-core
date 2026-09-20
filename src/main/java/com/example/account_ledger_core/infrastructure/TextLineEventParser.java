@@ -18,7 +18,7 @@ public final class TextLineEventParser {
     private static final Pattern AUTHORIZATION = Pattern.compile("^([A-Za-z0-9-]+)\\s+([A-Za-z0-9-]+)\\s+hold\\s+([A-Z]{3})\\s+([\\d,]+(?:\\.\\d+)?)$");
     private static final Pattern SETTLEMENT = Pattern.compile("^([A-Za-z0-9-]+)\\s+([A-Za-z0-9-]+)\\s+settles\\s+for\\s+([A-Z]{3})\\s+([\\d,]+(?:\\.\\d+)?)$");
     private static final Pattern REVERSAL = Pattern.compile("^([A-Za-z0-9-]+)\\s+reverses\\s+(E\\d+)$");
-    private static final Pattern INSTALLMENTS = Pattern.compile("^([A-Za-z0-9-]+)\\s+([A-Z]{3})\\s+([\\d,]+(?:\\.\\d+)?),\\s+posted\\s+as\\s+(\\d+)\\s+equal\\s+instalments$");
+    private static final Pattern INSTALLMENTS = Pattern.compile("^([A-Za-z0-9-]+)\\s+([A-Z]{3})\\s+([\\d,]+(?:\\.\\d+)?),\\s+posted\\s+as\\s+([A-Za-z]+|\\d+)\\s+equal\\s+instalments$");
 
     public List<LedgerEvent> load(Path path) {
         Objects.requireNonNull(path, "path");
@@ -38,7 +38,7 @@ public final class TextLineEventParser {
                 continue;
             }
             try {
-                events.add(parseLine(line, events.size() + 1));
+                events.add(parseLine(line, events.size() + 1, events));
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("Invalid event at line " + (index + 1) + ": " + e.getMessage(), e);
             }
@@ -46,7 +46,7 @@ public final class TextLineEventParser {
         return List.copyOf(events);
     }
 
-    private LedgerEvent parseLine(String line, int sequencePosition) {
+    private LedgerEvent parseLine(String line, int sequencePosition, List<LedgerEvent> priorEvents) {
         Matcher header = HEADER.matcher(line);
         if (!header.matches()) {
             throw new IllegalArgumentException("expected: E1 — Day 1 — CREDIT — details — value_date Day 1");
@@ -62,7 +62,7 @@ public final class TextLineEventParser {
             case "DEBIT" -> debit(eventId, sequencePosition, details, bookingDay, valueDate);
             case "AUTHORIZATION" -> authorization(eventId, sequencePosition, details, bookingDay, valueDate);
             case "SETTLEMENT" -> settlement(eventId, sequencePosition, details, bookingDay, valueDate);
-            case "REVERSAL" -> reversal(eventId, sequencePosition, details, bookingDay, valueDate);
+            case "REVERSAL" -> reversal(eventId, sequencePosition, details, bookingDay, valueDate, priorEvents);
             default -> throw new IllegalArgumentException("unsupported event type '" + type + "'");
         };
     }
@@ -71,7 +71,7 @@ public final class TextLineEventParser {
         Matcher installments = INSTALLMENTS.matcher(details);
         if (installments.matches()) {
             return new InstallmentCreditEvent(eventId, sequence, account(installments.group(1)),
-                    money(installments.group(2), installments.group(3)), integer(installments.group(4), "installments"),
+                    money(installments.group(2), installments.group(3)), installmentCount(installments.group(4)),
                     booking, value);
         }
         Matcher posting = POSTING.matcher(details);
@@ -104,11 +104,14 @@ public final class TextLineEventParser {
     }
 
     private LedgerEvent reversal(String eventId, int sequence, String details,
-                                 SimulationDay booking, SimulationDay value) {
+                                 SimulationDay booking, SimulationDay value, List<LedgerEvent> priorEvents) {
         Matcher match = REVERSAL.matcher(details);
         if (!match.matches()) throw new IllegalArgumentException("invalid REVERSAL details");
+        LedgerEvent original = priorEvents.stream()
+                .filter(event -> event.eventId().equals(match.group(2))).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("reversal target must precede the reversal"));
         return new ReversalEvent(eventId, sequence, account(match.group(1)), match.group(2),
-                currency("AED"), booking, value);
+                original.currency(), booking, value);
     }
 
     private Money money(String currency, String amount) {
@@ -143,5 +146,16 @@ public final class TextLineEventParser {
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(field + " must be an integer", e);
         }
+    }
+
+    private int installmentCount(String value) {
+        return switch (value.toLowerCase()) {
+            case "one" -> 1;
+            case "two" -> 2;
+            case "three" -> 3;
+            case "four" -> 4;
+            case "five" -> 5;
+            default -> integer(value, "installments");
+        };
     }
 }

@@ -34,3 +34,27 @@ started on 2026-09-19 before the implementation commits made overnight.
   command-line documentation.
 * 2026-09-20T17:14:07+04:00 — Changed custom text fixtures and parsing from
   pipe-delimited records to the requirement-style human-readable event lines.
+* 2026-09-20T18:01:03+04:00 — Added the production architecture note covering
+  append-only scaling, value-date controls, authorization lifecycle gaps, and
+  deliberate scope simplifications.
+* 2026-09-20 — Corrected review findings: rejected postings can no longer be
+  reversed, settlement captures are capped by the authorization hold,
+  authorization identifiers cannot overwrite existing state, rejected
+  authorizations are excluded from active state, event amounts are validated,
+  reversal currency is inferred from its target, daily reports expose
+  day-specific interest, and in-memory journals are synchronized.
+* 2026-09-20T18:44:00+04:00 — Corrected the second review: fee assessment now
+  runs after each complete booking day, rejected authorizations remain visible,
+  console output prints entries and errors, word-based installment counts are
+  parsed, known account currencies are enforced, reversals inherit the original
+  value date, ingestion errors are reported by day, journal ports are wired into
+  replay, ledger-entry invariants are enforced, and projection variants share
+  the canonical projection service.
+* 2026-09-20T19:10:00+04:00 — Resolved the final PR blockers: aligned fee
+  assertions with the documented historical assessment policy, removed
+  destructive journal clearing, preserved prior journal records across replay,
+  and ensured booked fees contribute to final balances and interest while
+  uncapitalized interest remains excluded.
+* 2026-09-20T21:21:00+04:00 — Corrected `AMBIGUITIES.md` to distinguish fresh
+  replay calculation state from intentionally persistent append-only journal
+  records across replay invocations.

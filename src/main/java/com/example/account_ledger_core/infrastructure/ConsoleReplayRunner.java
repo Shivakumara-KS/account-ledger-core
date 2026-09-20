@@ -28,10 +28,10 @@ public final class ConsoleReplayRunner implements CommandLineRunner {
         for (SimulationDay day : SimulationDay.values()) {
             DailyReport report = result.dailyReports().get(day);
             System.out.println(day + " balances=" + report.closingBalances()
-                    + " fees=" + report.feeEntries().size()
-                    + " feeReversals=" + report.feeReversals().size()
+                    + " fees=" + report.feeEntries()
+                    + " feeReversals=" + report.feeReversals()
                     + " authorizations=" + report.authorizations()
-                    + " errors=" + report.errors().size());
+                    + " errors=" + report.errors());
         }
         System.out.println("final=" + result.finalBalances());
     }

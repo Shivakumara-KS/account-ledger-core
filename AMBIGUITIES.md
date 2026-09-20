@@ -35,9 +35,12 @@
 15. **Fee booking versus value date.** A fee is booked on the day the negative
     condition is discovered and carries the negative assessment day's value
     date.
-16. **Replay state.** Every replay creates fresh derived state. Replaying the
-    same ordered event list twice produces equivalent results and no persistent
-    side effects.
+16. **Replay state.** Every replay creates fresh derived calculation state, so
+    replaying the same ordered event list twice produces equivalent
+    `ReplayResult` values. Injected event and ledger journals are different:
+    they retain append-only records across replay invocations, and duplicate
+    ledger entry IDs are not appended again. Journal persistence is therefore
+    intentional and auditable rather than a mutation of prior records.
 17. **Opening balances.** Both opening balances are zero and are represented
     by no synthetic ledger entries.
 18. **Report perspective.** A daily report includes entries booked by that day
